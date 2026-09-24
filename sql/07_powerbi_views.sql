@@ -45,7 +45,7 @@ SELECT
            - o.order_estimated_delivery_date::date <= 3 THEN '3. 1-3 days late'
         WHEN o.order_delivered_customer_date::date
            - o.order_estimated_delivery_date::date <= 7 THEN '4. 4-7 days late'
-        ELSE '5. 7+ days late'
+        ELSE '5. 8+ days late'
     END                                                        AS delay_bucket,
     ROUND(r.review_score, 2)                                   AS review_score
 FROM orders o

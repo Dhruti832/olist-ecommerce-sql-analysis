@@ -1,23 +1,35 @@
 -- =============================================================
 -- 05 Business Q4: Repeat customers & cohort retention
 -- Customer = customer_unique_id (customer_id is per order).
--- Delivered orders only.
+-- Delivered orders only, Jan 2017 - Aug 2018 (cohorts: first purchase
+-- in that window).
 -- =============================================================
 
 -- Q12. Repeat-customer rate
+-- Strict version counts only customers who bought on 2+ different days:
+-- several orders on the same day are usually one basket split across
+-- sellers, not a return visit.
 WITH customer_orders AS (
-    SELECT c.customer_unique_id, COUNT(DISTINCT o.order_id) AS orders
+    SELECT
+        c.customer_unique_id,
+        COUNT(DISTINCT o.order_id)                          AS orders,
+        COUNT(DISTINCT o.order_purchase_timestamp::date)    AS purchase_days
     FROM orders o
     JOIN customers c ON c.customer_id = o.customer_id
     WHERE o.order_status = 'delivered'
+      AND o.order_purchase_timestamp >= '2017-01-01'
+      AND o.order_purchase_timestamp <  '2018-09-01'
     GROUP BY c.customer_unique_id
 )
 SELECT
-    COUNT(*)                                           AS customers,
-    COUNT(*) FILTER (WHERE orders >= 2)                AS repeat_customers,
+    COUNT(*)                                                  AS customers,
+    COUNT(*) FILTER (WHERE orders >= 2)                       AS repeat_customers,
     ROUND(100.0 * COUNT(*) FILTER (WHERE orders >= 2)
-                / COUNT(*), 2)                         AS repeat_rate_pct,
-    ROUND(AVG(orders), 3)                              AS avg_orders_per_customer
+                / COUNT(*), 2)                                AS repeat_rate_pct,
+    COUNT(*) FILTER (WHERE purchase_days >= 2)                AS repeat_customers_strict,
+    ROUND(100.0 * COUNT(*) FILTER (WHERE purchase_days >= 2)
+                / COUNT(*), 2)                                AS repeat_rate_strict_pct,
+    ROUND(AVG(orders), 3)                                     AS avg_orders_per_customer
 FROM customer_orders;
 
 
@@ -126,6 +138,8 @@ WITH customer_orders AS (
     FROM orders o
     JOIN customers c ON c.customer_id = o.customer_id
     WHERE o.order_status = 'delivered'
+      AND o.order_purchase_timestamp >= '2017-01-01'
+      AND o.order_purchase_timestamp <  '2018-09-01'
 ),
 sequenced AS (
     SELECT
@@ -153,13 +167,18 @@ FROM gaps;
 
 
 -- Q15. Does a late first delivery reduce the chance of a repeat purchase?
+-- Two-proportion z-test: z = (p_on_time - p_late) / SE, with pooled SE;
+-- two-sided p-value = erfc(|z| / sqrt(2)).
+-- Bias check: late deliveries peaked in late 2017 / early 2018 (see Q6c),
+-- and customers who first bought near the end of the data had less time to
+-- return. The second row keeps only first orders before Mar 2018, so every
+-- customer had at least 6 months to come back.
 WITH customer_orders AS (
     SELECT
         c.customer_unique_id,
-        o.order_id,
         o.order_purchase_timestamp,
-        o.order_delivered_customer_date,
-        o.order_estimated_delivery_date,
+        o.order_delivered_customer_date::date
+          > o.order_estimated_delivery_date::date               AS is_late,
         ROW_NUMBER() OVER (PARTITION BY c.customer_unique_id
                            ORDER BY o.order_purchase_timestamp)  AS order_seq,
         COUNT(*)     OVER (PARTITION BY c.customer_unique_id)    AS total_orders
@@ -167,14 +186,47 @@ WITH customer_orders AS (
     JOIN customers c ON c.customer_id = o.customer_id
     WHERE o.order_status = 'delivered'
       AND o.order_delivered_customer_date IS NOT NULL
+      AND o.order_purchase_timestamp >= '2017-01-01'
+      AND o.order_purchase_timestamp <  '2018-09-01'
+),
+first_orders AS (
+    SELECT order_purchase_timestamp, is_late, (total_orders >= 2)::int AS repeated
+    FROM customer_orders
+    WHERE order_seq = 1
+),
+samples AS (
+    SELECT '1. All first orders' AS sample, is_late, repeated
+    FROM first_orders
+    UNION ALL
+    SELECT '2. First order before Mar 2018', is_late, repeated
+    FROM first_orders
+    WHERE order_purchase_timestamp < '2018-03-01'
+),
+rates AS (
+    SELECT
+        sample,
+        COUNT(*)      FILTER (WHERE NOT is_late)  AS n_on_time,
+        AVG(repeated) FILTER (WHERE NOT is_late)  AS p_on_time,
+        COUNT(*)      FILTER (WHERE is_late)      AS n_late,
+        AVG(repeated) FILTER (WHERE is_late)      AS p_late,
+        AVG(repeated)                             AS p_pooled
+    FROM samples
+    GROUP BY sample
+),
+tested AS (
+    SELECT
+        *,
+        (p_on_time - p_late)
+          / SQRT(p_pooled * (1 - p_pooled) * (1.0 / n_on_time + 1.0 / n_late)) AS z
+    FROM rates
 )
 SELECT
-    CASE WHEN order_delivered_customer_date::date > order_estimated_delivery_date::date
-         THEN 'Late first order' ELSE 'On-time first order' END   AS first_order,
-    COUNT(*)                                                      AS customers,
-    COUNT(*) FILTER (WHERE total_orders >= 2)                     AS repeat_customers,
-    ROUND(100.0 * AVG((total_orders >= 2)::int), 2)               AS repeat_rate_pct
-FROM customer_orders
-WHERE order_seq = 1
-GROUP BY 1
-ORDER BY 1;
+    sample,
+    n_on_time,
+    ROUND(100 * p_on_time, 2)                        AS on_time_repeat_pct,
+    n_late,
+    ROUND(100 * p_late, 2)                           AS late_repeat_pct,
+    ROUND(z, 2)                                      AS z_score,
+    ROUND(erfc(ABS(z)::float8 / SQRT(2))::numeric, 3) AS p_value
+FROM tested
+ORDER BY sample;

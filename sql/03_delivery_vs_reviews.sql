@@ -1,7 +1,8 @@
 -- =============================================================
 -- 03 Business Q2: Delivery delay vs. review score
 -- Delay = actual delivery date - estimated delivery date (in days;
--- negative = early). Delivered orders with a delivery date only.
+-- negative = early). Delivered orders with a delivery date only,
+-- Jan 2017 - Aug 2018.
 -- =============================================================
 
 -- Q6. Average review score by delivery-delay bucket
@@ -22,6 +23,8 @@ order_delay AS (
     JOIN order_reviews_agg r ON r.order_id = o.order_id
     WHERE o.order_status = 'delivered'
       AND o.order_delivered_customer_date IS NOT NULL
+      AND o.order_purchase_timestamp >= '2017-01-01'
+      AND o.order_purchase_timestamp <  '2018-09-01'
 ),
 bucketed AS (
     SELECT
@@ -31,7 +34,7 @@ bucketed AS (
             WHEN delay_days = 0  THEN '2. On time'
             WHEN delay_days <= 3 THEN '3. 1-3 days late'
             WHEN delay_days <= 7 THEN '4. 4-7 days late'
-            ELSE                      '5. 7+ days late'
+            ELSE                      '5. 8+ days late'
         END AS delay_bucket
     FROM order_delay
 )
@@ -55,4 +58,22 @@ FROM orders o
 JOIN (SELECT order_id, AVG(review_score) AS review_score
       FROM order_reviews GROUP BY order_id) r ON r.order_id = o.order_id
 WHERE o.order_status = 'delivered'
-  AND o.order_delivered_customer_date IS NOT NULL;
+  AND o.order_delivered_customer_date IS NOT NULL
+  AND o.order_purchase_timestamp >= '2017-01-01'
+  AND o.order_purchase_timestamp <  '2018-09-01';
+
+
+-- Q6c. Late-delivery rate by quarter (did logistics keep up with growth?)
+SELECT
+    DATE_TRUNC('quarter', o.order_purchase_timestamp)::date     AS quarter,
+    COUNT(*)                                                    AS delivered_orders,
+    ROUND(100.0 * AVG((o.order_delivered_customer_date::date
+                     > o.order_estimated_delivery_date::date)::int), 1)
+                                                                AS late_pct
+FROM orders o
+WHERE o.order_status = 'delivered'
+  AND o.order_delivered_customer_date IS NOT NULL
+  AND o.order_purchase_timestamp >= '2017-01-01'
+  AND o.order_purchase_timestamp <  '2018-09-01'
+GROUP BY 1
+ORDER BY 1;
