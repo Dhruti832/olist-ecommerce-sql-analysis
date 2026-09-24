@@ -1,0 +1,13 @@
+# Secrets
+.env
+
+# Raw data (download from Kaggle, see README)
+data/raw/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Office temp files
+~$*
